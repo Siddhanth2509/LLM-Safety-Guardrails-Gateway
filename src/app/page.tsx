@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Sparkles,
   Loader2,
+  FileUp,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -125,6 +126,8 @@ export default function HomePage() {
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Query state
   const [query, setQuery] = useState("");
@@ -166,7 +169,49 @@ export default function HomePage() {
     fetchHistory();
   }, [fetchDocuments, fetchHistory]);
 
-  // ── Upload document ──
+  // ── Read file content ──
+  const readFileContent = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsText(file);
+    });
+  };
+
+  // ── Handle file selection / drop ──
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    for (const file of Array.from(files)) {
+      const ext = file.name.split(".").pop()?.toLowerCase();
+      if (!ext || !["txt", "md", "csv", "json", "html", "xml"].includes(ext)) {
+        toast.error(`"${file.name}" — unsupported format. Use .txt, .md, .csv, .json`);
+        continue;
+      }
+      try {
+        const content = await readFileContent(file);
+        const title = newTitle.trim() || file.name.replace(/\.[^.]+$/, "");
+        setIsUploading(true);
+        const res = await fetch("/api/documents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, content }),
+        });
+        if (!res.ok) throw new Error("Upload failed");
+        const doc = await res.json();
+        toast.success(`Uploaded "${doc.title}" (${doc.chunkCount} chunks)`);
+        setNewTitle("");
+        setNewContent("");
+        fetchDocuments();
+      } catch {
+        toast.error(`Failed to upload "${file.name}"`);
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  };
+
+  // ── Upload document (text paste) ──
   const handleUpload = async () => {
     if (!newTitle.trim() || !newContent.trim()) {
       toast.error("Please provide both title and content");
@@ -190,6 +235,21 @@ export default function HomePage() {
     } finally {
       setIsUploading(false);
     }
+  };
+
+  // ── Drag & drop handlers ──
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    handleFiles(e.dataTransfer.files);
   };
 
   // ── Delete document ──
@@ -360,8 +420,45 @@ A practical evaluation strategy is to maintain a "golden dataset" of 100+ questi
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
+                {/* File upload dropzone */}
+                <div
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`relative flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-all duration-200 ${
+                    isDragging
+                      ? "border-emerald-400 bg-emerald-500/5"
+                      : "border-border/50 hover:border-border hover:bg-muted/30"
+                  }`}
+                >
+                  <FileUp className={`w-5 h-5 ${isDragging ? "text-emerald-400" : "text-muted-foreground/50"}`} />
+                  <div className="text-center">
+                    <p className="text-xs text-muted-foreground">
+                      {isDragging ? "Drop file here" : "Drop files here or click to upload"}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                      .txt, .md, .csv, .json, .html
+                    </p>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".txt,.md,.csv,.json,.html,.xml"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => handleFiles(e.target.files)}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Separator className="flex-1" />
+                  <span className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">or paste text</span>
+                  <Separator className="flex-1" />
+                </div>
+
                 <Input
-                  placeholder="Document title..."
+                  placeholder="Document title (optional for file uploads)..."
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
                   className="h-8 text-sm bg-background/50"
@@ -370,7 +467,7 @@ A practical evaluation strategy is to maintain a "golden dataset" of 100+ questi
                   placeholder="Paste document content here..."
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
-                  className="min-h-[120px] text-sm bg-background/50 resize-none"
+                  className="min-h-[100px] text-sm bg-background/50 resize-none"
                 />
                 <Button
                   size="sm"
