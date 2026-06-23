@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  chunkCount Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  chunks    Chunk[]
+}
+
+model Chunk {
+  id         String   @id @default(cuid())
+  text       String
+  chunkIndex Int
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+}
+
+model QueryLog {
+  id          String   @id @default(cuid())
+  query       String
+  answer      String
+  status      String   // "accepted" | "rejected" | "max_retries"
+  iterations  Int
+  chunksUsed  String   // JSON array of chunk IDs
+  pipelineLog String   // JSON array of pipeline steps
+  latencyMs   Int
+  createdAt   DateTime @default(now())
+}
