@@ -127,7 +127,7 @@ export default function HomePage() {
   const [newContent, setNewContent] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
 
   // Query state
   const [query, setQuery] = useState("");
@@ -169,8 +169,8 @@ export default function HomePage() {
     fetchHistory();
   }, [fetchDocuments, fetchHistory]);
 
-  // ── Read file content ──
-  const readFileContent = (file: File): Promise<string> => {
+  // ── Read file as text ──
+  const readFileAsText = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
@@ -179,36 +179,51 @@ export default function HomePage() {
     });
   };
 
-  // ── Handle file selection / drop ──
-  const handleFiles = async (files: FileList | null) => {
+  // ── Process a single uploaded file ──
+  const processFile = async (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!ext || !["txt", "md", "csv", "json", "html", "xml"].includes(ext)) {
+      toast.error(`Unsupported format: .${ext || "?"} — use .txt, .md, .csv, .json`);
+      return;
+    }
+    setUploadingFileName(file.name);
+    try {
+      const content = await readFileAsText(file);
+      if (!content || content.trim().length === 0) {
+        toast.error(`"${file.name}" is empty`);
+        return;
+      }
+      const title = newTitle.trim() || file.name.replace(/\.[^.]+$/, "");
+      const res = await fetch("/api/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, content }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Upload failed");
+      }
+      const doc = await res.json();
+      toast.success(`Uploaded "${doc.title}" — ${doc.chunkCount} chunks created`);
+      setNewTitle("");
+      setNewContent("");
+      fetchDocuments();
+    } catch (err) {
+      toast.error(`Failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setUploadingFileName(null);
+    }
+  };
+
+  // ── Handle file input change ──
+  const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
     if (!files || files.length === 0) return;
     for (const file of Array.from(files)) {
-      const ext = file.name.split(".").pop()?.toLowerCase();
-      if (!ext || !["txt", "md", "csv", "json", "html", "xml"].includes(ext)) {
-        toast.error(`"${file.name}" — unsupported format. Use .txt, .md, .csv, .json`);
-        continue;
-      }
-      try {
-        const content = await readFileContent(file);
-        const title = newTitle.trim() || file.name.replace(/\.[^.]+$/, "");
-        setIsUploading(true);
-        const res = await fetch("/api/documents", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title, content }),
-        });
-        if (!res.ok) throw new Error("Upload failed");
-        const doc = await res.json();
-        toast.success(`Uploaded "${doc.title}" (${doc.chunkCount} chunks)`);
-        setNewTitle("");
-        setNewContent("");
-        fetchDocuments();
-      } catch {
-        toast.error(`Failed to upload "${file.name}"`);
-      } finally {
-        setIsUploading(false);
-      }
+      processFile(file);
     }
+    // Reset input so the same file can be re-uploaded
+    e.target.value = "";
   };
 
   // ── Upload document (text paste) ──
@@ -240,16 +255,23 @@ export default function HomePage() {
   // ── Drag & drop handlers ──
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(true);
   };
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
   };
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    for (const file of Array.from(files)) {
+      processFile(file);
+    }
   };
 
   // ── Delete document ──
@@ -425,31 +447,47 @@ A practical evaluation strategy is to maintain a "golden dataset" of 100+ questi
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
                   onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`relative flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed cursor-pointer transition-all duration-200 ${
+                  className={`relative flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed transition-all duration-200 ${
                     isDragging
                       ? "border-emerald-400 bg-emerald-500/5"
-                      : "border-border/50 hover:border-border hover:bg-muted/30"
+                      : "border-border/50"
                   }`}
                 >
                   <FileUp className={`w-5 h-5 ${isDragging ? "text-emerald-400" : "text-muted-foreground/50"}`} />
                   <div className="text-center">
                     <p className="text-xs text-muted-foreground">
-                      {isDragging ? "Drop file here" : "Drop files here or click to upload"}
+                      {isDragging ? "Drop file here" : "Drag & drop files here"}
                     </p>
                     <p className="text-[10px] text-muted-foreground/60 mt-0.5">
                       .txt, .md, .csv, .json, .html
                     </p>
                   </div>
+                </div>
+                {/* Browse button — separate from the dropzone */}
+                <label className="block">
                   <input
-                    ref={fileInputRef}
                     type="file"
                     accept=".txt,.md,.csv,.json,.html,.xml"
                     multiple
                     className="hidden"
-                    onChange={(e) => handleFiles(e.target.files)}
+                    onChange={onFileInputChange}
                   />
-                </div>
+                  <span
+                    className={`flex items-center justify-center gap-1.5 w-full py-1.5 rounded-md text-xs font-medium border border-border/50 bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors ${uploadingFileName ? "pointer-events-none opacity-60" : ""}`}
+                  >
+                    {uploadingFileName ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {"Uploading "}{uploadingFileName}{"..."}
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3 h-3" />
+                        Browse Files
+                      </>
+                    )}
+                  </span>
+                </label>
 
                 <div className="flex items-center gap-2">
                   <Separator className="flex-1" />
