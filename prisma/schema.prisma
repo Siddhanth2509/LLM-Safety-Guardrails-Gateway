@@ -7,33 +7,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Document {
+model GatewayLog {
+  id          String   @id @default(cuid())
+  requestId   String   @unique
+  direction   String   // "input" or "output"
+  inputText   String
+  outputText  String?
+  status      String   // "allowed", "blocked", "modified"
+  blockedBy   String?  // which guardrail triggered
+  reason      String?  // human-readable explanation
+  latencyMs   Int
+  piiFound    String?  // JSON array of detected PII
+  createdAt   DateTime @default(now())
+}
+
+model PolicyRule {
   id        String   @id @default(cuid())
-  title     String
-  content   String
-  chunkCount Int     @default(0)
+  name      String   @unique
+  category  String   // "input" or "output"
+  type      String   // "pii", "prompt_injection", "topic", "schema", "toxicity"
+  enabled   Boolean  @default(true)
+  config    String   // JSON config for the rule
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  chunks    Chunk[]
-}
-
-model Chunk {
-  id         String   @id @default(cuid())
-  text       String
-  chunkIndex Int
-  documentId String
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
-}
-
-model QueryLog {
-  id          String   @id @default(cuid())
-  query       String
-  answer      String
-  status      String   // "accepted" | "rejected" | "max_retries"
-  iterations  Int
-  chunksUsed  String   // JSON array of chunk IDs
-  pipelineLog String   // JSON array of pipeline steps
-  latencyMs   Int
-  createdAt   DateTime @default(now())
 }

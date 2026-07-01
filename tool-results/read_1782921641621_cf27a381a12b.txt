@@ -1,0 +1,993 @@
+     1→"use client";
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from "react";
+     4→import { Button } from "@/components/ui/button";
+     5→import { Textarea } from "@/components/ui/textarea";
+     6→import { Input } from "@/components/ui/input";
+     7→import { Badge } from "@/components/ui/badge";
+     8→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+     9→import { ScrollArea } from "@/components/ui/scroll-area";
+    10→import { Separator } from "@/components/ui/separator";
+    11→import { Skeleton } from "@/components/ui/skeleton";
+    12→import {
+    13→  Search,
+    14→  Upload,
+    15→  FileText,
+    16→  Trash2,
+    17→  RefreshCw,
+    18→  CheckCircle2,
+    19→  XCircle,
+    20→  AlertTriangle,
+    21→  Brain,
+    22→  Eye,
+    23→  Shield,
+    24→  ArrowRight,
+    25→  Zap,
+    26→  Database,
+    27→  Clock,
+    28→  ChevronDown,
+    29→  ChevronRight,
+    30→  Sparkles,
+    31→  Loader2,
+    32→  FileUp,
+    33→} from "lucide-react";
+    34→import { toast } from "sonner";
+    35→
+    36→// ─── Types ──────────────────────────────────────────────────────────
+    37→
+    38→interface Document {
+    39→  id: string;
+    40→  title: string;
+    41→  chunkCount: number;
+    42→  createdAt: string;
+    43→}
+    44→
+    45→interface RetrievedChunk {
+    46→  id: string;
+    47→  text: string;
+    48→  documentId: string;
+    49→  score: number;
+    50→  chunkIndex: number;
+    51→}
+    52→
+    53→interface PipelineEvent {
+    54→  step: string;
+    55→  iteration: number;
+    56→  timestamp: number;
+    57→  detail?: string;
+    58→  chunks?: { id: string; text: string; score: number }[];
+    59→  critique?: { grounded: boolean; reason: string; confidence: number };
+    60→}
+    61→
+    62→interface PipelineResult {
+    63→  answer: string;
+    64→  status: string;
+    65→  iterations: number;
+    66→  events: PipelineEvent[];
+    67→  retrievedChunks: RetrievedChunk[];
+    68→  latencyMs: number;
+    69→}
+    70→
+    71→interface QueryLog {
+    72→  id: string;
+    73→  query: string;
+    74→  answer: string;
+    75→  status: string;
+    76→  iterations: number;
+    77→  latencyMs: number;
+    78→  createdAt: string;
+    79→  pipelineLog: string;
+    80→}
+    81→
+    82→// ─── Step Config ────────────────────────────────────────────────────
+    83→
+    84→const STEP_CONFIG: Record<
+    85→  string,
+    86→  { icon: React.ReactNode; color: string; label: string }
+    87→> = {
+    88→  retrieving: {
+    89→    icon: <Database className="w-4 h-4" />,
+    90→    color: "text-sky-400",
+    91→    label: "Retrieve",
+    92→  },
+    93→  generating: {
+    94→    icon: <Sparkles className="w-4 h-4" />,
+    95→    color: "text-violet-400",
+    96→    label: "Generate",
+    97→  },
+    98→  critiquing: {
+    99→    icon: <Shield className="w-4 h-4" />,
+   100→    color: "text-amber-400",
+   101→    label: "Critique",
+   102→  },
+   103→  reformulating: {
+   104→    icon: <RefreshCw className="w-4 h-4" />,
+   105→    color: "text-orange-400",
+   106→    label: "Reformulate",
+   107→  },
+   108→  accepted: {
+   109→    icon: <CheckCircle2 className="w-4 h-4" />,
+   110→    color: "text-emerald-400",
+   111→    label: "Accepted",
+   112→  },
+   113→  fallback: {
+   114→    icon: <AlertTriangle className="w-4 h-4" />,
+   115→    color: "text-red-400",
+   116→    label: "Fallback",
+   117→  },
+   118→};
+   119→
+   120→// ─── Main Component ─────────────────────────────────────────────────
+   121→
+   122→export default function HomePage() {
+   123→  // Knowledge base state
+   124→  const [documents, setDocuments] = useState<Document[]>([]);
+   125→  const [totalChunks, setTotalChunks] = useState(0);
+   126→  const [newTitle, setNewTitle] = useState("");
+   127→  const [newContent, setNewContent] = useState("");
+   128→  const [isUploading, setIsUploading] = useState(false);
+   129→  const [isDragging, setIsDragging] = useState(false);
+   130→  const [uploadingFileName, setUploadingFileName] = useState<string | null>(null);
+   131→
+   132→  // Query state
+   133→  const [query, setQuery] = useState("");
+   134→  const [isQuerying, setIsQuerying] = useState(false);
+   135→  const [result, setResult] = useState<PipelineResult | null>(null);
+   136→  const [queryHistory, setQueryHistory] = useState<QueryLog[]>([]);
+   137→
+   138→  // UI state
+   139→  const [showChunks, setShowChunks] = useState(false);
+   140→  const [showHistory, setShowHistory] = useState(false);
+   141→  const [activeStep, setActiveStep] = useState<string | null>(null);
+   142→  const answerRef = useRef<HTMLDivElement>(null);
+   143→  const queryInputRef = useRef<HTMLTextAreaElement>(null);
+   144→
+   145→  // ── Fetch documents on mount ──
+   146→  const fetchDocuments = useCallback(async () => {
+   147→    try {
+   148→      const res = await fetch("/api/documents");
+   149→      const data = await res.json();
+   150→      setDocuments(data.documents || []);
+   151→      setTotalChunks(data.totalChunks || 0);
+   152→    } catch {
+   153→      toast.error("Failed to load documents");
+   154→    }
+   155→  }, []);
+   156→
+   157→  const fetchHistory = useCallback(async () => {
+   158→    try {
+   159→      const res = await fetch("/api/query");
+   160→      const data = await res.json();
+   161→      setQueryHistory(data.logs || []);
+   162→    } catch {
+   163→      // silent
+   164→    }
+   165→  }, []);
+   166→
+   167→  useEffect(() => {
+   168→    fetchDocuments();
+   169→    fetchHistory();
+   170→  }, [fetchDocuments, fetchHistory]);
+   171→
+   172→  // ── Read file as text ──
+   173→  const readFileAsText = (file: File): Promise<string> => {
+   174→    return new Promise((resolve, reject) => {
+   175→      const reader = new FileReader();
+   176→      reader.onload = () => resolve(reader.result as string);
+   177→      reader.onerror = () => reject(new Error("Failed to read file"));
+   178→      reader.readAsText(file);
+   179→    });
+   180→  };
+   181→
+   182→  // ── Process a single uploaded file ──
+   183→  const processFile = async (file: File) => {
+   184→    const ext = file.name.split(".").pop()?.toLowerCase();
+   185→    if (!ext || !["txt", "md", "csv", "json", "html", "xml"].includes(ext)) {
+   186→      toast.error(`Unsupported format: .${ext || "?"} — use .txt, .md, .csv, .json`);
+   187→      return;
+   188→    }
+   189→    setUploadingFileName(file.name);
+   190→    try {
+   191→      const content = await readFileAsText(file);
+   192→      if (!content || content.trim().length === 0) {
+   193→        toast.error(`"${file.name}" is empty`);
+   194→        return;
+   195→      }
+   196→      const title = newTitle.trim() || file.name.replace(/\.[^.]+$/, "");
+   197→      const res = await fetch("/api/documents", {
+   198→        method: "POST",
+   199→        headers: { "Content-Type": "application/json" },
+   200→        body: JSON.stringify({ title, content }),
+   201→      });
+   202→      if (!res.ok) {
+   203→        const err = await res.json().catch(() => ({}));
+   204→        throw new Error(err.error || "Upload failed");
+   205→      }
+   206→      const doc = await res.json();
+   207→      toast.success(`Uploaded "${doc.title}" — ${doc.chunkCount} chunks created`);
+   208→      setNewTitle("");
+   209→      setNewContent("");
+   210→      fetchDocuments();
+   211→    } catch (err) {
+   212→      toast.error(`Failed: ${err instanceof Error ? err.message : "unknown error"}`);
+   213→    } finally {
+   214→      setUploadingFileName(null);
+   215→    }
+   216→  };
+   217→
+   218→  // ── Handle file input change ──
+   219→  const onFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+   220→    const files = e.target.files;
+   221→    if (!files || files.length === 0) return;
+   222→    for (const file of Array.from(files)) {
+   223→      processFile(file);
+   224→    }
+   225→    // Reset input so the same file can be re-uploaded
+   226→    e.target.value = "";
+   227→  };
+   228→
+   229→  // ── Upload document (text paste) ──
+   230→  const handleUpload = async () => {
+   231→    if (!newTitle.trim() || !newContent.trim()) {
+   232→      toast.error("Please provide both title and content");
+   233→      return;
+   234→    }
+   235→    setIsUploading(true);
+   236→    try {
+   237→      const res = await fetch("/api/documents", {
+   238→        method: "POST",
+   239→        headers: { "Content-Type": "application/json" },
+   240→        body: JSON.stringify({ title: newTitle.trim(), content: newContent }),
+   241→      });
+   242→      if (!res.ok) throw new Error("Upload failed");
+   243→      const doc = await res.json();
+   244→      toast.success(`Uploaded "${doc.title}" (${doc.chunkCount} chunks)`);
+   245→      setNewTitle("");
+   246→      setNewContent("");
+   247→      fetchDocuments();
+   248→    } catch {
+   249→      toast.error("Failed to upload document");
+   250→    } finally {
+   251→      setIsUploading(false);
+   252→    }
+   253→  };
+   254→
+   255→  // ── Drag & drop handlers ──
+   256→  const handleDragOver = (e: React.DragEvent) => {
+   257→    e.preventDefault();
+   258→    e.stopPropagation();
+   259→    setIsDragging(true);
+   260→  };
+   261→  const handleDragLeave = (e: React.DragEvent) => {
+   262→    e.preventDefault();
+   263→    e.stopPropagation();
+   264→    setIsDragging(false);
+   265→  };
+   266→  const handleDrop = (e: React.DragEvent) => {
+   267→    e.preventDefault();
+   268→    e.stopPropagation();
+   269→    setIsDragging(false);
+   270→    const files = e.dataTransfer.files;
+   271→    if (!files || files.length === 0) return;
+   272→    for (const file of Array.from(files)) {
+   273→      processFile(file);
+   274→    }
+   275→  };
+   276→
+   277→  // ── Delete document ──
+   278→  const handleDelete = async (id: string) => {
+   279→    try {
+   280→      await fetch(`/api/documents?id=${id}`, { method: "DELETE" });
+   281→      toast.success("Document deleted");
+   282→      fetchDocuments();
+   283→    } catch {
+   284→      toast.error("Failed to delete document");
+   285→    }
+   286→  };
+   287→
+   288→  // ── Run query ──
+   289→  const handleQuery = async () => {
+   290→    if (!query.trim()) return;
+   291→    setIsQuerying(true);
+   292→    setResult(null);
+   293→    setActiveStep("retrieving");
+   294→
+   295→    try {
+   296→      const res = await fetch("/api/query", {
+   297→        method: "POST",
+   298→        headers: { "Content-Type": "application/json" },
+   299→        body: JSON.stringify({ query: query.trim() }),
+   300→      });
+   301→      const data: PipelineResult = await res.json();
+   302→
+   303→      // Animate through the pipeline steps
+   304→      for (const event of data.events) {
+   305→        setActiveStep(event.step);
+   306→        await new Promise((r) => setTimeout(r, 300));
+   307→      }
+   308→
+   309→      setResult(data);
+   310→      setActiveStep(null);
+   311→      fetchHistory();
+   312→
+   313→      if (data.answer) {
+   314→        setTimeout(() => {
+   315→          answerRef.current?.scrollIntoView({ behavior: "smooth" });
+   316→        }, 200);
+   317→      }
+   318→    } catch {
+   319→      toast.error("Failed to process query");
+   320→      setActiveStep(null);
+   321→    } finally {
+   322→      setIsQuerying(false);
+   323→    }
+   324→  };
+   325→
+   326→  // ── Load sample documents ──
+   327→  const loadSampleData = async () => {
+   328→    const sampleDocs = [
+   329→      {
+   330→        title: "Introduction to RAG Systems",
+   331→        content: `Retrieval-Augmented Generation (RAG) is a technique that enhances large language model responses by grounding them in external knowledge sources. Instead of relying solely on the model's parametric memory, RAG systems first retrieve relevant documents from a knowledge base, then use those documents as context for generating an answer.
+   332→
+   333→The core components of a RAG system are: (1) a document store containing the knowledge base, (2) an embedding model that converts text into vector representations, (3) a vector database for efficient similarity search, and (4) a language model that generates responses using the retrieved context.
+   334→
+   335→RAG systems solve several key problems with pure LLMs: they reduce hallucination by grounding responses in real data, they allow the knowledge base to be updated without retraining the model, and they provide source attribution so users can verify claims.
+   336→
+   337→Common challenges with RAG include: poor retrieval quality when queries are ambiguous, the "lost in the middle" problem where models ignore context in the middle of long prompts, and the tendency of models to still hallucinate even when correct context is provided. These challenges have led to the development of "self-healing" RAG systems that evaluate and improve their own outputs.`,
+   338→      },
+   339→      {
+   340→        title: "Self-Healing RAG Architecture",
+   341→        content: `Self-Healing RAG is an advanced architecture that adds a self-evaluation loop to the standard RAG pipeline. While traditional RAG follows a linear flow of retrieve-then-generate, self-healing RAG introduces a "critic" agent that evaluates the generated answer for accuracy and grounding.
+   342→
+   343→The pipeline works in a cyclical manner: First, relevant document chunks are retrieved from the vector store using the user's query. Then, a generator LLM produces an answer using those chunks as context. Next, a separate critic LLM evaluates whether the answer is actually grounded in the retrieved chunks or if the model has hallucinated information.
+   344→
+   345→If the critic rejects the answer, the system enters a "healing" phase. It can reformulate the original query to be more specific, retrieve new chunks using the refined query, and generate a new answer. This cycle continues until the critic accepts the answer or a maximum number of retries is reached.
+   346→
+   347→The key advantage of this approach is that it significantly reduces the hallucination rate compared to standard RAG. Studies have shown that self-healing RAG can reduce hallucination rates from 15-20% down to 2-5% depending on the domain and configuration. The trade-off is increased latency and cost due to the additional critique and potential retry steps.
+   348→
+   349→Implementation typically uses frameworks like LangGraph that support cyclical workflows with state management, allowing the pipeline to loop back to earlier steps based on the critic's evaluation.`,
+   350→      },
+   351→      {
+   352→        title: "Evaluation Metrics for RAG Systems",
+   353→        content: `Evaluating RAG systems requires metrics that go beyond traditional NLP measures. The most important metrics fall into three categories: retrieval quality, generation quality, and end-to-end performance.
+   354→
+   355→For retrieval quality, the key metrics are: Recall@K (what fraction of relevant documents are in the top-K results), Precision@K (what fraction of the top-K results are actually relevant), and Mean Reciprocal Rank (the average of the reciprocal ranks of the first relevant result). These metrics require a labeled dataset of query-document relevance pairs.
+   356→
+   357→For generation quality, faithfulness is the most critical metric - it measures whether the generated answer is actually supported by the retrieved context. Other important metrics include answer relevancy (is the answer actually addressing the question), context precision (are the retrieved chunks useful for answering), and context recall (did the retrieval step find enough relevant information).
+   358→
+   359→The RAGAS framework (Retrieval Augmented Generation Assessment) provides automated evaluation for all these metrics. It uses a separate LLM call to judge faithfulness, answer relevancy, and other criteria. DeepEval and TruLens are alternative frameworks that offer similar capabilities.
+   360→
+   361→A practical evaluation strategy is to maintain a "golden dataset" of 100+ question-answer pairs with expected outputs and edge cases. This dataset should include straightforward factual questions, ambiguous queries, questions outside the knowledge base scope, and adversarial queries designed to provoke hallucination. Running this eval set as part of a CI/CD pipeline ensures that RAG quality doesn't regress as the system evolves.`,
+   362→      },
+   363→    ];
+   364→
+   365→    for (const doc of sampleDocs) {
+   366→      await fetch("/api/documents", {
+   367→        method: "POST",
+   368→        headers: { "Content-Type": "application/json" },
+   369→        body: JSON.stringify(doc),
+   370→      });
+   371→    }
+   372→    toast.success("3 sample documents loaded");
+   373→    fetchDocuments();
+   374→  };
+   375→
+   376→  // ── Keyboard shortcut ──
+   377→  const handleKeyDown = (e: React.KeyboardEvent) => {
+   378→    if (e.key === "Enter" && !e.shiftKey) {
+   379→      e.preventDefault();
+   380→      handleQuery();
+   381→    }
+   382→  };
+   383→
+   384→  // ── Render ──
+   385→  return (
+   386→    <div className="min-h-screen bg-background">
+   387→      {/* Header */}
+   388→      <header className="border-b border-border/50 bg-card/50 backdrop-blur-sm sticky top-0 z-50">
+   389→        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+   390→          <div className="flex items-center gap-3">
+   391→            <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+   392→              <Brain className="w-5 h-5 text-emerald-400" />
+   393→            </div>
+   394→            <div>
+   395→              <h1 className="text-lg font-semibold tracking-tight">
+   396→                Self-Healing RAG
+   397→              </h1>
+   398→              <p className="text-xs text-muted-foreground">
+   399→                Retrieve. Generate. Critique. Heal.
+   400→              </p>
+   401→            </div>
+   402→          </div>
+   403→          <div className="flex items-center gap-3">
+   404→            <Badge
+   405→              variant="outline"
+   406→              className="text-xs font-mono border-emerald-500/30 text-emerald-400"
+   407→            >
+   408→              <Database className="w-3 h-3 mr-1" />
+   409→              {totalChunks} chunks
+   410→            </Badge>
+   411→            <Badge
+   412→              variant="outline"
+   413→              className="text-xs font-mono border-violet-500/30 text-violet-400"
+   414→            >
+   415→              <FileText className="w-3 h-3 mr-1" />
+   416→              {documents.length} docs
+   417→            </Badge>
+   418→          </div>
+   419→        </div>
+   420→      </header>
+   421→
+   422→      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+   423→        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+   424→          {/* ─── Left Panel: Knowledge Base ─── */}
+   425→          <aside className="lg:col-span-4 xl:col-span-3 space-y-4">
+   426→            <Card className="bg-card/50 border-border/50">
+   427→              <CardHeader className="pb-3">
+   428→                <div className="flex items-center justify-between">
+   429→                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+   430→                    <Database className="w-4 h-4 text-sky-400" />
+   431→                    Knowledge Base
+   432→                  </CardTitle>
+   433→                  <Button
+   434→                    variant="ghost"
+   435→                    size="sm"
+   436→                    className="text-xs text-muted-foreground hover:text-foreground h-7"
+   437→                    onClick={loadSampleData}
+   438→                  >
+   439→                    <Zap className="w-3 h-3 mr-1" />
+   440→                    Load Samples
+   441→                  </Button>
+   442→                </div>
+   443→              </CardHeader>
+   444→              <CardContent className="space-y-3">
+   445→                {/* File upload dropzone */}
+   446→                <div
+   447→                  onDragOver={handleDragOver}
+   448→                  onDragLeave={handleDragLeave}
+   449→                  onDrop={handleDrop}
+   450→                  className={`relative flex flex-col items-center justify-center gap-1.5 p-4 rounded-lg border-2 border-dashed transition-all duration-200 ${
+   451→                    isDragging
+   452→                      ? "border-emerald-400 bg-emerald-500/5"
+   453→                      : "border-border/50"
+   454→                  }`}
+   455→                >
+   456→                  <FileUp className={`w-5 h-5 ${isDragging ? "text-emerald-400" : "text-muted-foreground/50"}`} />
+   457→                  <div className="text-center">
+   458→                    <p className="text-xs text-muted-foreground">
+   459→                      {isDragging ? "Drop file here" : "Drag & drop files here"}
+   460→                    </p>
+   461→                    <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+   462→                      .txt, .md, .csv, .json, .html
+   463→                    </p>
+   464→                  </div>
+   465→                </div>
+   466→                {/* Browse button — separate from the dropzone */}
+   467→                <label className="block">
+   468→                  <input
+   469→                    type="file"
+   470→                    accept=".txt,.md,.csv,.json,.html,.xml"
+   471→                    multiple
+   472→                    className="hidden"
+   473→                    onChange={onFileInputChange}
+   474→                  />
+   475→                  <span
+   476→                    className={`flex items-center justify-center gap-1.5 w-full py-1.5 rounded-md text-xs font-medium border border-border/50 bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors ${uploadingFileName ? "pointer-events-none opacity-60" : ""}`}
+   477→                  >
+   478→                    {uploadingFileName ? (
+   479→                      <>
+   480→                        <Loader2 className="w-3 h-3 animate-spin" />
+   481→                        {"Uploading "}{uploadingFileName}{"..."}
+   482→                      </>
+   483→                    ) : (
+   484→                      <>
+   485→                        <Upload className="w-3 h-3" />
+   486→                        Browse Files
+   487→                      </>
+   488→                    )}
+   489→                  </span>
+   490→                </label>
+   491→
+   492→                <div className="flex items-center gap-2">
+   493→                  <Separator className="flex-1" />
+   494→                  <span className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">or paste text</span>
+   495→                  <Separator className="flex-1" />
+   496→                </div>
+   497→
+   498→                <Input
+   499→                  placeholder="Document title (optional for file uploads)..."
+   500→                  value={newTitle}
+   501→                  onChange={(e) => setNewTitle(e.target.value)}
+   502→                  className="h-8 text-sm bg-background/50"
+   503→                />
+   504→                <Textarea
+   505→                  placeholder="Paste document content here..."
+   506→                  value={newContent}
+   507→                  onChange={(e) => setNewContent(e.target.value)}
+   508→                  className="min-h-[100px] text-sm bg-background/50 resize-none"
+   509→                />
+   510→                <Button
+   511→                  size="sm"
+   512→                  className="w-full h-8 text-xs"
+   513→                  onClick={handleUpload}
+   514→                  disabled={isUploading || !newTitle.trim() || !newContent.trim()}
+   515→                >
+   516→                  {isUploading ? (
+   517→                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+   518→                  ) : (
+   519→                    <Upload className="w-3 h-3 mr-1" />
+   520→                  )}
+   521→                  Upload & Chunk
+   522→                </Button>
+   523→              </CardContent>
+   524→            </Card>
+   525→
+   526→            {/* Document List */}
+   527→            <Card className="bg-card/50 border-border/50">
+   528→              <CardHeader className="pb-2">
+   529→                <CardTitle className="text-sm font-medium text-muted-foreground">
+   530→                  Uploaded Documents
+   531→                </CardTitle>
+   532→              </CardHeader>
+   533→              <CardContent>
+   534→                {documents.length === 0 ? (
+   535→                  <p className="text-xs text-muted-foreground text-center py-4">
+   536→                    No documents yet. Upload some content or load samples.
+   537→                  </p>
+   538→                ) : (
+   539→                  <ScrollArea className="max-h-64">
+   540→                    <div className="space-y-2">
+   541→                      {documents.map((doc) => (
+   542→                        <div
+   543→                          key={doc.id}
+   544→                          className="flex items-center justify-between p-2 rounded-md bg-background/50 border border-border/30 group"
+   545→                        >
+   546→                          <div className="min-w-0 flex-1">
+   547→                            <p className="text-xs font-medium truncate">
+   548→                              {doc.title}
+   549→                            </p>
+   550→                            <p className="text-[10px] text-muted-foreground">
+   551→                              {doc.chunkCount} chunks
+   552→                            </p>
+   553→                          </div>
+   554→                          <Button
+   555→                            variant="ghost"
+   556→                            size="sm"
+   557→                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
+   558→                            onClick={() => handleDelete(doc.id)}
+   559→                          >
+   560→                            <Trash2 className="w-3 h-3" />
+   561→                          </Button>
+   562→                        </div>
+   563→                      ))}
+   564→                    </div>
+   565→                  </ScrollArea>
+   566→                )}
+   567→              </CardContent>
+   568→            </Card>
+   569→          </aside>
+   570→
+   571→          {/* ─── Right Panel: Query & Results ─── */}
+   572→          <section className="lg:col-span-8 xl:col-span-9 space-y-4">
+   573→            {/* Query Input */}
+   574→            <Card className="bg-card/50 border-border/50">
+   575→              <CardContent className="pt-4 pb-4">
+   576→                <div className="flex gap-2">
+   577→                  <div className="flex-1 relative">
+   578→                    <Textarea
+   579→                      ref={queryInputRef}
+   580→                      placeholder="Ask a question about your knowledge base..."
+   581→                      value={query}
+   582→                      onChange={(e) => setQuery(e.target.value)}
+   583→                      onKeyDown={handleKeyDown}
+   584→                      disabled={isQuerying}
+   585→                      className="min-h-[48px] max-h-[120px] text-sm bg-background/50 resize-none pr-12"
+   586→                      rows={1}
+   587→                    />
+   588→                    <Button
+   589→                      size="sm"
+   590→                      className="absolute right-2 bottom-2 h-7 w-7 p-0"
+   591→                      onClick={handleQuery}
+   592→                      disabled={isQuerying || !query.trim()}
+   593→                    >
+   594→                      {isQuerying ? (
+   595→                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+   596→                      ) : (
+   597→                        <Search className="w-3.5 h-3.5" />
+   598→                      )}
+   599→                    </Button>
+   600→                  </div>
+   601→                </div>
+   602→                <p className="text-[10px] text-muted-foreground mt-1.5">
+   603→                  Press Enter to query. The pipeline will retrieve, generate,
+   604→                  critique, and self-heal if needed.
+   605→                </p>
+   606→              </CardContent>
+   607→            </Card>
+   608→
+   609→            {/* Pipeline Visualization */}
+   610→            {isQuerying && (
+   611→              <Card className="bg-card/50 border-border/50 overflow-hidden">
+   612→                <CardHeader className="pb-2">
+   613→                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+   614→                    <Eye className="w-4 h-4 text-violet-400" />
+   615→                    Pipeline Status
+   616→                    <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+   617→                  </CardTitle>
+   618→                </CardHeader>
+   619→                <CardContent>
+   620→                  <PipelineVisualization activeStep={activeStep} />
+   621→                </CardContent>
+   622→              </Card>
+   623→            )}
+   624→
+   625→            {/* Result */}
+   626→            {result && (
+   627→              <>
+   628→                {/* Status Bar */}
+   629→                <div className="flex items-center gap-3 flex-wrap">
+   630→                  <Badge
+   631→                    variant="outline"
+   632→                    className={
+   633→                      result.status === "accepted"
+   634→                        ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/5"
+   635→                        : result.status === "fallback"
+   636→                          ? "border-red-500/30 text-red-400 bg-red-500/5"
+   637→                          : "border-amber-500/30 text-amber-400 bg-amber-500/5"
+   638→                    }
+   639→                  >
+   640→                    {result.status === "accepted" && (
+   641→                      <CheckCircle2 className="w-3 h-3 mr-1" />
+   642→                    )}
+   643→                    {result.status === "fallback" && (
+   644→                      <AlertTriangle className="w-3 h-3 mr-1" />
+   645→                    )}
+   646→                    {result.status === "max_retries" && (
+   647→                      <XCircle className="w-3 h-3 mr-1" />
+   648→                    )}
+   649→                    {result.status.toUpperCase()}
+   650→                  </Badge>
+   651→                  <Badge
+   652→                    variant="outline"
+   653→                    className="text-xs font-mono border-border/50 text-muted-foreground"
+   654→                  >
+   655→                    <RefreshCw className="w-3 h-3 mr-1" />
+   656→                    {result.iterations} iteration{result.iterations !== 1 ? "s" : ""}
+   657→                  </Badge>
+   658→                  <Badge
+   659→                    variant="outline"
+   660→                    className="text-xs font-mono border-border/50 text-muted-foreground"
+   661→                  >
+   662→                    <Clock className="w-3 h-3 mr-1" />
+   663→                    {result.latencyMs}ms
+   664→                  </Badge>
+   665→                  <Badge
+   666→                    variant="outline"
+   667→                    className="text-xs font-mono border-border/50 text-muted-foreground"
+   668→                  >
+   669→                    <Database className="w-3 h-3 mr-1" />
+   670→                    {result.retrievedChunks.length} chunks
+   671→                  </Badge>
+   672→                </div>
+   673→
+   674→                {/* Pipeline Event Log */}
+   675→                <Card className="bg-card/50 border-border/50">
+   676→                  <CardHeader className="pb-2">
+   677→                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+   678→                      <Zap className="w-4 h-4 text-amber-400" />
+   679→                      Pipeline Trace
+   680→                    </CardTitle>
+   681→                  </CardHeader>
+   682→                  <CardContent>
+   683→                    <div className="space-y-2">
+   684→                      {result.events
+   685→                        .filter(
+   686→                          (e, i, arr) =>
+   687→                            arr.findIndex(
+   688→                              (x) =>
+   689→                                x.step === e.step &&
+   690→                                x.iteration === e.iteration
+   691→                            ) === i
+   692→                        )
+   693→                        .map((event, idx) => {
+   694→                          const config = STEP_CONFIG[event.step] || {
+   695→                            icon: <Zap className="w-4 h-4" />,
+   696→                            color: "text-muted-foreground",
+   697→                            label: event.step,
+   698→                          };
+   699→                          return (
+   700→                            <div key={idx} className="flex items-start gap-3">
+   701→                              <div
+   702→                                className={`mt-0.5 p-1 rounded-md bg-background/80 ${config.color}`}
+   703→                              >
+   704→                                {config.icon}
+   705→                              </div>
+   706→                              <div className="flex-1 min-w-0">
+   707→                                <div className="flex items-center gap-2">
+   708→                                  <span
+   709→                                    className={`text-xs font-medium ${config.color}`}
+   710→                                  >
+   711→                                    {config.label}
+   712→                                  </span>
+   713→                                  {event.iteration > 0 && (
+   714→                                    <span className="text-[10px] text-muted-foreground font-mono">
+   715→                                      #{event.iteration}
+   716→                                    </span>
+   717→                                  )}
+   718→                                </div>
+   719→                                {event.detail && (
+   720→                                  <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+   721→                                    {event.detail}
+   722→                                  </p>
+   723→                                )}
+   724→                                {event.critique && (
+   725→                                  <div className="mt-1.5 p-2 rounded-md bg-background/50 border border-border/30">
+   726→                                    <div className="flex items-center gap-2 mb-1">
+   727→                                      <span
+   728→                                        className={`text-[10px] font-medium ${
+   729→                                          event.critique.grounded
+   730→                                            ? "text-emerald-400"
+   731→                                            : "text-red-400"
+   732→                                        }`}
+   733→                                      >
+   734→                                        {event.critique.grounded
+   735→                                          ? "GROUNDED"
+   736→                                          : "NOT GROUNDED"}
+   737→                                      </span>
+   738→                                      <span className="text-[10px] text-muted-foreground font-mono">
+   739→                                        confidence: {Math.round(event.critique.confidence * 100)}%
+   740→                                      </span>
+   741→                                    </div>
+   742→                                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+   743→                                      {event.critique.reason}
+   744→                                    </p>
+   745→                                  </div>
+   746→                                )}
+   747→                              </div>
+   748→                              {idx <
+   749→                                result.events.filter(
+   750→                                  (e, i, arr) =>
+   751→                                    arr.findIndex(
+   752→                                      (x) =>
+   753→                                        x.step === e.step &&
+   754→                                        x.iteration === e.iteration
+   755→                                    ) === i
+   756→                                ).length -
+   757→                                  1 && (
+   758→                                  <ArrowRight className="w-3 h-3 text-muted-foreground/50 mt-1 shrink-0" />
+   759→                                )}
+   760→                            </div>
+   761→                          );
+   762→                        })}
+   763→                    </div>
+   764→                  </CardContent>
+   765→                </Card>
+   766→
+   767→                {/* Retrieved Chunks (collapsible) */}
+   768→                {result.retrievedChunks.length > 0 && (
+   769→                  <Card className="bg-card/50 border-border/50">
+   770→                    <button
+   771→                      className="w-full flex items-center justify-between p-4 pb-2 text-left"
+   772→                      onClick={() => setShowChunks(!showChunks)}
+   773→                    >
+   774→                      <span className="text-sm font-medium flex items-center gap-2">
+   775→                        <FileText className="w-4 h-4 text-sky-400" />
+   776→                        Retrieved Chunks
+   777→                        <span className="text-[10px] text-muted-foreground font-mono">
+   778→                          ({result.retrievedChunks.length})
+   779→                        </span>
+   780→                      </span>
+   781→                      {showChunks ? (
+   782→                        <ChevronDown className="w-4 h-4 text-muted-foreground" />
+   783→                      ) : (
+   784→                        <ChevronRight className="w-4 h-4 text-muted-foreground" />
+   785→                      )}
+   786→                    </button>
+   787→                    {showChunks && (
+   788→                      <CardContent className="pt-0">
+   789→                        <div className="space-y-2">
+   790→                          {result.retrievedChunks.map((chunk, idx) => (
+   791→                            <div
+   792→                              key={chunk.id}
+   793→                              className="p-3 rounded-md bg-background/50 border border-border/30"
+   794→                            >
+   795→                              <div className="flex items-center justify-between mb-1">
+   796→                                <span className="text-[10px] font-mono text-muted-foreground">
+   797→                                  Chunk #{idx + 1} (index: {chunk.chunkIndex})
+   798→                                </span>
+   799→                                <span className="text-[10px] font-mono text-sky-400">
+   800→                                  score: {chunk.score.toFixed(3)}
+   801→                                </span>
+   802→                              </div>
+   803→                              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-4">
+   804→                                {chunk.text}
+   805→                              </p>
+   806→                            </div>
+   807→                          ))}
+   808→                        </div>
+   809→                      </CardContent>
+   810→                    )}
+   811→                  </Card>
+   812→                )}
+   813→
+   814→                {/* Final Answer */}
+   815→                <Card
+   816→                  ref={answerRef}
+   817→                  className="bg-card/50 border-emerald-500/20"
+   818→                >
+   819→                  <CardHeader className="pb-2">
+   820→                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+   821→                      <Sparkles className="w-4 h-4 text-emerald-400" />
+   822→                      Answer
+   823→                      {result.status === "accepted" && (
+   824→                        <Badge
+   825→                          variant="outline"
+   826→                          className="text-[10px] border-emerald-500/30 text-emerald-400 bg-emerald-500/5"
+   827→                        >
+   828→                          Verified
+   829→                        </Badge>
+   830→                      )}
+   831→                    </CardTitle>
+   832→                  </CardHeader>
+   833→                  <CardContent>
+   834→                    <div className="text-sm leading-relaxed whitespace-pre-wrap">
+   835→                      {result.answer}
+   836→                    </div>
+   837→                  </CardContent>
+   838→                </Card>
+   839→              </>
+   840→            )}
+   841→
+   842→            {/* Empty State */}
+   843→            {!result && !isQuerying && (
+   844→              <Card className="bg-card/30 border-border/30 border-dashed">
+   845→                <CardContent className="py-16 text-center">
+   846→                  <Brain className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+   847→                  <p className="text-sm text-muted-foreground">
+   848→                    Upload documents and ask a question to see the self-healing
+   849→                    pipeline in action.
+   850→                  </p>
+   851→                  <p className="text-xs text-muted-foreground/60 mt-1">
+   852→                    The pipeline retrieves relevant chunks, generates an answer,
+   853→                    critiques it for hallucinations, and retries if needed.
+   854→                  </p>
+   855→                </CardContent>
+   856→              </Card>
+   857→            )}
+   858→
+   859→            {/* Query History */}
+   860→            {queryHistory.length > 0 && (
+   861→              <Card className="bg-card/50 border-border/50">
+   862→                <button
+   863→                  className="w-full flex items-center justify-between p-4 pb-2 text-left"
+   864→                  onClick={() => setShowHistory(!showHistory)}
+   865→                >
+   866→                  <span className="text-sm font-medium flex items-center gap-2">
+   867→                    <Clock className="w-4 h-4 text-muted-foreground" />
+   868→                    Query History
+   869→                    <span className="text-[10px] text-muted-foreground font-mono">
+   870→                      ({queryHistory.length})
+   871→                    </span>
+   872→                  </span>
+   873→                  {showHistory ? (
+   874→                    <ChevronDown className="w-4 h-4 text-muted-foreground" />
+   875→                  ) : (
+   876→                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+   877→                  )}
+   878→                </button>
+   879→                {showHistory && (
+   880→                  <CardContent className="pt-0">
+   881→                    <ScrollArea className="max-h-60">
+   882→                      <div className="space-y-2">
+   883→                        {queryHistory.map((log) => (
+   884→                          <div
+   885→                            key={log.id}
+   886→                            className="p-2.5 rounded-md bg-background/50 border border-border/30 cursor-pointer hover:bg-background/80 transition-colors"
+   887→                            onClick={() => {
+   888→                              setQuery(log.query);
+   889→                              queryInputRef.current?.focus();
+   890→                            }}
+   891→                          >
+   892→                            <div className="flex items-center justify-between mb-1">
+   893→                              <p className="text-xs font-medium truncate max-w-[70%]">
+   894→                                {log.query}
+   895→                              </p>
+   896→                              <div className="flex items-center gap-2">
+   897→                                <Badge
+   898→                                  variant="outline"
+   899→                                  className={`text-[9px] h-4 px-1.5 ${
+   900→                                    log.status === "accepted"
+   901→                                      ? "border-emerald-500/30 text-emerald-400"
+   902→                                      : "border-amber-500/30 text-amber-400"
+   903→                                  }`}
+   904→                                >
+   905→                                  {log.status}
+   906→                                </Badge>
+   907→                                <span className="text-[10px] font-mono text-muted-foreground">
+   908→                                  {log.latencyMs}ms
+   909→                                </span>
+   910→                              </div>
+   911→                            </div>
+   912→                          </div>
+   913→                        ))}
+   914→                      </div>
+   915→                    </ScrollArea>
+   916→                  </CardContent>
+   917→                )}
+   918→              </Card>
+   919→            )}
+   920→          </section>
+   921→        </div>
+   922→      </main>
+   923→
+   924→      {/* Footer */}
+   925→      <footer className="border-t border-border/30 mt-auto">
+   926→        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
+   927→          <p className="text-[10px] text-muted-foreground text-center">
+   928→            Self-Healing RAG Pipeline — A RAG system that critiques its own
+   929→            output and retries | Built with Next.js, Prisma, TF-IDF Retrieval
+   930→          </p>
+   931→        </div>
+   932→      </footer>
+   933→    </div>
+   934→  );
+   935→}
+   936→
+   937→// ─── Pipeline Visualization Component ────────────────────────────────
+   938→
+   939→function PipelineVisualization({
+   940→  activeStep,
+   941→}: {
+   942→  activeStep: string | null;
+   943→}) {
+   944→  const steps = ["retrieving", "generating", "critiquing", "accepted"];
+   945→
+   946→  const getStepState = (step: string) => {
+   947→    if (step === activeStep) return "active";
+   948→    const currentIdx = steps.indexOf(activeStep || "");
+   949→    const stepIdx = steps.indexOf(step);
+   950→    if (stepIdx < currentIdx) return "completed";
+   951→    return "pending";
+   952→  };
+   953→
+   954→  return (
+   955→    <div className="flex items-center justify-between gap-2 px-2">
+   956→      {steps.map((step, idx) => {
+   957→        const state = getStepState(step);
+   958→        const config = STEP_CONFIG[step];
+   959→        return (
+   960→          <div key={step} className="flex items-center gap-2 flex-1">
+   961→            <div
+   962→              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-300 ${
+   963→                state === "active"
+   964→                  ? "bg-primary/10 border border-primary/20 text-primary"
+   965→                  : state === "completed"
+   966→                    ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400"
+   967→                    : "bg-muted/30 border border-border/20 text-muted-foreground/40"
+   968→              }`}
+   969→            >
+   970→              {state === "active" ? (
+   971→                <Loader2 className="w-3 h-3 animate-spin" />
+   972→              ) : state === "completed" ? (
+   973→                <CheckCircle2 className="w-3 h-3" />
+   974→              ) : (
+   975→                <span className="w-3 h-3">{config?.icon}</span>
+   976→              )}
+   977→              {config?.label || step}
+   978→            </div>
+   979→            {idx < steps.length - 1 && (
+   980→              <ArrowRight
+   981→                className={`w-3 h-3 shrink-0 transition-colors ${
+   982→                  state === "completed"
+   983→                    ? "text-emerald-400/50"
+   984→                    : "text-muted-foreground/20"
+   985→                }`}
+   986→              />
+   987→            )}
+   988→          </div>
+   989→        );
+   990→      })}
+   991→    </div>
+   992→  );
+   993→}

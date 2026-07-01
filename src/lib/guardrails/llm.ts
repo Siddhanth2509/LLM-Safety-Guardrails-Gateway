@@ -1,7 +1,3 @@
-/**
- * LLM wrapper using z-ai-web-dev-sdk for text chat completions.
- */
-
 import ZAI from "z-ai-web-dev-sdk";
 
 let zaiInstance: InstanceType<typeof ZAI> | null = null;
