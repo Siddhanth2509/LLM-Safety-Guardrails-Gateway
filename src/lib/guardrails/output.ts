@@ -48,9 +48,9 @@ export function validateJSONSchema(
  */
 export function checkToxicity(output: string): ValidationResult {
   const toxicPatterns = [
-    { pattern: /(?:i(?:'m| am) (?:going to|planning to|about to) (?:kill|hurt|harm|attack)/i, reason: "Violent intent expression" },
+    { pattern: /i(?:'m| am) (?:going to|planning to|about to) (?:kill|hurt|harm|attack)/i, reason: "Violent intent expression" },
     { pattern: /(?:how to|instructions? to|step.?by.?step to) (?:make|create|build|cook) (?:a )?(?:bomb|weapon|drug|poison|meth)/i, reason: "Harmful content generation request" },
-    { pattern: /(?:i(?:'m| am) (?:an? )?(?:nazi|racist|supremacist|white nationalist)/i, reason: "Hate speech self-identification" },
+    { pattern: /i(?:'m| am) (?:an? )?(?:nazi|racist|supremacist|white nationalist)/i, reason: "Hate speech self-identification" },
     { pattern: /(?:all \w+ (?:should|must|deserve to|need to) (?:die|be killed|be eliminated))/i, reason: "Genocidal language" },
   ];
 

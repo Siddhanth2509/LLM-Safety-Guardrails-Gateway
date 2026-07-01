@@ -35,7 +35,7 @@ const PATTERNS: { type: string; label: string; pattern: RegExp }[] = [
   {
     type: "api_key",
     label: "API Key",
-    pattern: /\b(sk|pk|api_key|apikey|secret|token)[_-][A-Za-z0-9]{20,}\b/gi,
+    pattern: /\b(sk|pk|api_key|apikey|secret|token)[_-][A-Za-z0-9_-]{20,}\b/gi,
   },
   {
     type: "aws_key",
