@@ -13,7 +13,7 @@ function generateId(): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { input, dryRun } = body;
+    const { input, dryRun, rules } = body;
 
     if (!input || typeof input !== "string") {
       return NextResponse.json({ error: "Input text is required." }, { status: 400 });
@@ -21,7 +21,20 @@ export async function POST(request: NextRequest) {
 
     const requestId = generateId();
     const startTime = Date.now();
-    const policy = getPolicy();
+    const defaultPolicy = getPolicy();
+
+    // Parse and apply policy overrides if passed from client
+    const policy = rules ? {
+      ...defaultPolicy,
+      inputRules: defaultPolicy.inputRules.map((r: any) => {
+        const match = rules.find((po: any) => po.type === r.type);
+        return match ? { ...r, enabled: match.enabled } : r;
+      }),
+      outputRules: defaultPolicy.outputRules.map((r: any) => {
+        const match = rules.find((po: any) => po.type === r.type);
+        return match ? { ...r, enabled: match.enabled } : r;
+      }),
+    } : defaultPolicy;
 
     // ── Step 1: Input Guardrails ──
     const pii = detectPII(input);
@@ -32,23 +45,26 @@ export async function POST(request: NextRequest) {
     let blockedBy: string | undefined;
     let reason: string | undefined;
 
-    if (injection.detected && injection.confidence >= 0.5) {
+    const injectionRule = policy.inputRules.find((r: any) => r.type === "prompt_injection");
+    const piiRule = policy.inputRules.find((r: any) => r.type === "pii");
+
+    if (injectionRule?.enabled && injection.detected && injection.confidence >= 0.5) {
       inputStatus = "blocked";
       blockedBy = "prompt_injection";
       reason = injection.reason;
-    } else if (pii.length > 0) {
-      const piiRule = policy.inputRules.find((r: any) => r.type === "pii");
-      if (piiRule?.action === "mask") {
+    } else if (piiRule?.enabled && pii.length > 0) {
+      if (piiRule.action === "mask") {
         inputStatus = "modified";
         maskedInput = maskPII(input, pii);
         blockedBy = "pii";
         reason = `PII detected: ${pii.map((p: any) => p.label).join(", ")}`;
-      } else if (piiRule?.action === "block") {
+      } else if (piiRule.action === "block") {
         inputStatus = "blocked";
         blockedBy = "pii";
         reason = `PII blocked: ${pii.map((p: any) => p.label).join(", ")}`;
       }
     }
+
 
     const baseResult: Record<string, unknown> = {
       requestId,

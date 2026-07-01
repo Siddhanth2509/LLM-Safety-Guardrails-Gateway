@@ -63,8 +63,11 @@ import {
   Gauge,
   ArrowDown,
   AlertTriangle,
+  LogOut,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
+
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -332,8 +335,35 @@ function AnimatedPipeline({ activeStep, status }: { activeStep: number; status: 
 // ─── Main Component ────────────────────────────────────────────────
 
 export default function GuardrailsGateway() {
+  const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [rules, setRules] = useState(POLICY_RULES);
+
+  const toggleRule = useCallback((type: string) => {
+    setRules((prevRules) =>
+      prevRules.map((rule) =>
+        rule.type === type ? { ...rule, enabled: !rule.enabled } : rule
+      )
+    );
+    toast.info("Updating policy rules...");
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      const res = await fetch("/api/logout", { method: "POST" });
+      if (res.ok) {
+        toast.success("Successfully logged out.");
+        router.push("/login");
+        router.refresh();
+      } else {
+        toast.error("Failed to log out.");
+      }
+    } catch {
+      toast.error("An error occurred during logout.");
+    }
+  }, [router]);
+
   const [result, setResult] = useState<GatewayResult | null>(null);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [activeResultType, setActiveResultType] = useState<"dry" | "full" | null>(null);
@@ -394,7 +424,7 @@ export default function GuardrailsGateway() {
       const dryRes = await fetch("/api/gateway", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: inputText, dryRun: true }),
+        body: JSON.stringify({ input: inputText, dryRun: true, rules }),
       });
       if (!dryRes.ok) throw new Error("Gateway request failed");
       const dryData: GatewayResult = await dryRes.json();
@@ -413,7 +443,7 @@ export default function GuardrailsGateway() {
       const fullRes = await fetch("/api/gateway", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: inputText }),
+        body: JSON.stringify({ input: inputText, rules }),
       });
       if (!fullRes.ok) throw new Error("Gateway request failed");
       const fullData: GatewayResult = await fullRes.json();
@@ -426,7 +456,7 @@ export default function GuardrailsGateway() {
     } finally {
       setIsProcessing(false);
     }
-  }, [prompt, fetchDashboard, animatePipeline]);
+  }, [prompt, fetchDashboard, animatePipeline, rules]);
 
   // Ref-based submit for example clicks (avoids stale closure)
   const promptRef = useRef(prompt);
@@ -451,7 +481,7 @@ export default function GuardrailsGateway() {
       const dryRes = await fetch("/api/gateway", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: text, dryRun: true }),
+        body: JSON.stringify({ input: text, dryRun: true, rules }),
       });
       if (!dryRes.ok) throw new Error("Gateway request failed");
       const dryData: GatewayResult = await dryRes.json();
@@ -468,7 +498,7 @@ export default function GuardrailsGateway() {
       const fullRes = await fetch("/api/gateway", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: text }),
+        body: JSON.stringify({ input: text, rules }),
       });
       if (!fullRes.ok) throw new Error("Gateway request failed");
       const fullData: GatewayResult = await fullRes.json();
@@ -482,7 +512,7 @@ export default function GuardrailsGateway() {
     } finally {
       setIsProcessing(false);
     }
-  }, [fetchDashboard, animatePipeline]);
+  }, [fetchDashboard, animatePipeline, rules]);
 
   // ── Benchmark handler ──
   const runBenchmark = useCallback(async () => {
@@ -506,11 +536,15 @@ export default function GuardrailsGateway() {
   // ── Clear logs ──
   const clearLogs = useCallback(async () => {
     try {
-      await fetch("/api/clear", { method: "DELETE" });
+      const res = await fetch("/api/clear", { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to clear logs");
       toast.success("All logs cleared");
       fetchDashboard();
-    } catch { toast.error("Failed to clear logs"); }
+    } catch {
+      toast.error("Failed to clear logs");
+    }
   }, [fetchDashboard]);
+
 
   // ── Example prompt click ──
   const handleExampleClick = useCallback((examplePrompt: string) => {
@@ -571,9 +605,19 @@ export default function GuardrailsGateway() {
               <span className="text-xs text-zinc-400">Latency</span>
               <span className="text-xs font-bold tabular-nums text-zinc-200">{dashboard?.stats.avgLatency ?? "—"}ms</span>
             </div>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-500 hover:text-zinc-300" onClick={fetchDashboard}>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-500 hover:text-zinc-300" onClick={fetchDashboard} title="Refresh Statistics">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-red-500/70 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
+              onClick={handleLogout}
+              title="Logout"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+
           </div>
         </div>
       </header>
@@ -583,12 +627,13 @@ export default function GuardrailsGateway() {
         <div className="mx-auto max-w-7xl px-4 py-2.5 sm:px-6">
           <div className="flex flex-wrap items-center gap-2">
             <span className="mr-1 text-xs font-medium uppercase tracking-widest text-zinc-600">Rules</span>
-            {POLICY_RULES.map((rule) => (
+            {rules.map((rule) => (
               <motion.div
                 key={rule.type}
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.97 }}
-                className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors"
+                onClick={() => toggleRule(rule.type)}
+                className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer select-none"
                 style={{
                   borderColor: rule.enabled ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)",
                   backgroundColor: rule.enabled ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)",
@@ -1035,8 +1080,8 @@ export default function GuardrailsGateway() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {POLICY_RULES.map((rule) => (
-                          <TableRow key={rule.type} className="border-white/[0.04] hover:bg-white/[0.02]">
+                        {rules.map((rule) => (
+                          <TableRow key={rule.type} className="border-white/[0.04] hover:bg-white/[0.02] cursor-pointer select-none" onClick={() => toggleRule(rule.type)}>
                             <TableCell className="pl-4 py-2.5">
                               <div className="flex items-center gap-2">
                                 <span className={`inline-block h-1.5 w-1.5 rounded-full ${rule.enabled ? "bg-emerald-400" : "bg-red-400"}`} />
